@@ -30,6 +30,9 @@ public class ThroughputCounterManagerThread extends Periodical {
         public ThroughputCounterManagerThread create();
     }
 
+    @Inject
+    private ThroughputStats throughputStats;
+    
     @Override
     public boolean runsForever() {
         return false;
@@ -38,13 +41,9 @@ public class ThroughputCounterManagerThread extends Periodical {
     private ThroughputStats throughputStats;
 
     @Override
-    public boolean stopOnGracefulShutdown() {
-        return false;
-    }
-
-    @Override
-    public boolean masterOnly() {
-        return false;
+    public void run() {
+        throughputStats.setCurrentThroughput(throughputStats.getThroughputCounter().get());
+        throughputStats.getThroughputCounter().set(0);
     }
     
     @Override
