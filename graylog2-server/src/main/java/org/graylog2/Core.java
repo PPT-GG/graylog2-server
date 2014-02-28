@@ -13,9 +13,9 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- *
  * You should have received a copy of the GNU General Public License
  * along with Graylog2.  If not, see <http://www.gnu.org/licenses/>.
+ *
  */
 
 package org.graylog2;
@@ -40,7 +40,6 @@ import org.graylog2.blacklists.BlacklistCache;
 import org.graylog2.buffers.OutputBuffer;
 import org.graylog2.buffers.processors.ServerProcessBufferProcessor;
 import org.graylog2.dashboards.DashboardRegistry;
-import org.graylog2.database.HostCounterCacheImpl;
 import org.graylog2.database.MongoBridge;
 import org.graylog2.database.MongoConnection;
 import org.graylog2.indexer.Deflector;
@@ -53,8 +52,10 @@ import org.graylog2.inputs.ServerInputRegistry;
 import org.graylog2.inputs.gelf.gelf.GELFChunkManager;
 import org.graylog2.jersey.container.netty.NettyContainer;
 import org.graylog2.metrics.jersey2.MetricsDynamicBinding;
+import org.graylog2.periodical.Periodicals;
+import org.graylog2.rest.RestAccessLogFilter;
 import org.graylog2.outputs.OutputRegistry;
-import org.graylog2.periodical.MongoDbMetricsReporter;
+import org.graylog2.metrics.MongoDbMetricsReporter;
 import org.graylog2.plugin.GraylogServer;
 import org.graylog2.plugin.InputHost;
 import org.graylog2.plugin.Tools;
@@ -134,14 +135,15 @@ public class Core implements GraylogServer, InputHost, ProcessingHost {
 
     private static final int SCHEDULED_THREADS_POOL_SIZE = 30;
     private ScheduledExecutorService scheduler;
+    private ScheduledExecutorService daemonScheduler;
 
     public static final Version GRAYLOG2_VERSION = ServerVersion.VERSION;
     public static final String GRAYLOG2_CODENAME = "Moose";
 
     private Indexer indexer;
 
-    private HostCounterCacheImpl hostCounterCache;
-
+    private Counter benchmarkCounter = new Counter();
+    private Counter throughputCounter = new Counter();
     private AtomicReference<ConcurrentHashMap<String, Counter>> streamThroughput =
             new AtomicReference<ConcurrentHashMap<String, Counter>>(new ConcurrentHashMap<String, Counter>());
     @Inject
@@ -155,6 +157,7 @@ public class Core implements GraylogServer, InputHost, ProcessingHost {
 
     @Inject
     private OutputRegistry outputs;
+    private Periodicals periodicals;
 
     private DashboardRegistry dashboards;
     
@@ -226,6 +229,8 @@ public class Core implements GraylogServer, InputHost, ProcessingHost {
 
         initializers = new Initializers(this);
         inputs = new ServerInputRegistry(this);
+        outputs = new OutputRegistry(this);
+        periodicals = new Periodicals(this);
 
         if (isMaster()) {
             dashboards = new DashboardRegistry(this);
@@ -236,8 +241,6 @@ public class Core implements GraylogServer, InputHost, ProcessingHost {
 
         systemJobManager = new SystemJobManager(this);
 
-        hostCounterCache = new HostCounterCacheImpl();
-        
         inputCache = new BasicCache();
         outputCache = new BasicCache();
 
@@ -305,6 +308,13 @@ public class Core implements GraylogServer, InputHost, ProcessingHost {
         deflector.setUp();
 
         scheduler = Executors.newScheduledThreadPool(SCHEDULED_THREADS_POOL_SIZE,
+                new ThreadFactoryBuilder()
+                        .setNameFormat("scheduled-%d")
+                        .setDaemon(false)
+                        .build()
+        );
+
+        daemonScheduler = Executors.newScheduledThreadPool(SCHEDULED_THREADS_POOL_SIZE,
                 new ThreadFactoryBuilder()
                         .setNameFormat("scheduled-%d")
                         .setDaemon(true)
@@ -487,6 +497,10 @@ public class Core implements GraylogServer, InputHost, ProcessingHost {
     public ScheduledExecutorService getScheduler() {
         return scheduler;
     }
+
+    public ScheduledExecutorService getDaemonScheduler() {
+        return daemonScheduler;
+    }
     
     public void setConfiguration(Configuration configuration) {
         this.configuration = configuration;
@@ -538,10 +552,6 @@ public class Core implements GraylogServer, InputHost, ProcessingHost {
         return this.alarmCallbacks;
     }
 
-    public HostCounterCacheImpl getHostCounterCache() {
-        return this.hostCounterCache;
-    }
-    
     public Deflector getDeflector() {
         return this.deflector;
     }
@@ -684,6 +694,10 @@ public class Core implements GraylogServer, InputHost, ProcessingHost {
 
     public OutputRegistry outputs() {
         return outputs;
+    }
+
+    public Periodicals periodicals() {
+        return periodicals;
     }
 
     public DashboardRegistry dashboards() {
